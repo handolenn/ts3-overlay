@@ -66,5 +66,8 @@ pip install -r requirements.txt
 - Klasör içerisindeki **`Overlay Aç.bat`** dosyasına çift tıklayarak uygulamayı kolayca başlatabilir veya komut satırından `python main.py` yazarak çalıştırabilirsiniz.
 Teamspeak3 açık değilken çalışmayacaktır.
 
+![Overlay controtrol panel](https://i.imgur.com/buH5IAa.png)
+
+![enter image description here](https://i.imgur.com/shNhJQh.png)
 
 [youtube...](https://youtube.com/shorts/KTUq_7OETVQ)
