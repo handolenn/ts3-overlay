@@ -4,7 +4,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
     QSpinBox, QSlider, QCheckBox, QPushButton, QColorDialog, QTabWidget,
-    QWidget, QLabel, QGroupBox, QFontComboBox
+    QWidget, QLabel, QGroupBox, QFontComboBox, QLineEdit
 )
 from PyQt6.QtGui import QColor, QFont, QIcon
 
@@ -251,7 +251,40 @@ class SettingsDialog(QDialog):
 
         tabs.addTab(pos_tab, "Konumlandırma")
 
-        # --- Tab 3: Güncelleme ---
+        # --- Tab 3: TS3 Bağlantı & API Key ---
+        ts3_tab = QWidget()
+        ts3_layout = QVBoxLayout(ts3_tab)
+        ts3_layout.setSpacing(12)
+
+        ts3_group = QGroupBox("TeamSpeak 3 API Key & Bağlantı Ayarları")
+        ts3_form = QFormLayout(ts3_group)
+
+        self.api_key_input = QLineEdit()
+        self.api_key_input.setPlaceholderText("API Key girin (otomatik bulunamazsa)...")
+        self.api_key_input.setText(self.config.get("api_key", ""))
+        self.api_key_input.setStyleSheet("padding: 6px; background-color: #181820; color: #ffffff; border: 1px solid #3a3a46; border-radius: 4px;")
+
+        self.auto_key_btn = QPushButton("API Key Otomatik Algıla")
+
+        ts3_form.addRow("TS3 API Key:", self.api_key_input)
+        ts3_form.addRow("", self.auto_key_btn)
+
+        info_label = QLabel(
+            "<b>'Kanal Bulunamadı' veya Bağlantı Sorunu Çözümü:</b><br/>"
+            "1. TS3'te <i>Araçlar -> Seçenekler -> Eklentiler</i> bölümünden <b>ClientQuery</b> eklentisinin <u>Etkin (Enabled)</u> olduğundan emin olun.<br/>"
+            "2. ClientQuery -> Ayarlar bölümünden API Key'i kopyalayıp yukarıdaki kutuya yapıştırın.<br/>"
+            "3. TeamSpeak 3 istemcisinde bir sunucuya ve kanala bağlı olduğunuzdan emin olun."
+        )
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet("color: #b0b0c0; background-color: #181820; padding: 10px; border-radius: 6px; margin-top: 10px; line-height: 1.4;")
+
+        ts3_layout.addWidget(ts3_group)
+        ts3_layout.addWidget(info_label)
+        ts3_layout.addStretch()
+
+        tabs.addTab(ts3_tab, "TS3 Bağlantı")
+
+        # --- Tab 4: Güncelleme ---
         update_tab = QWidget()
         update_layout = QVBoxLayout(update_tab)
         update_layout.setSpacing(12)
@@ -310,6 +343,13 @@ class SettingsDialog(QDialog):
     def open_github_link(self):
         webbrowser.open("https://github.com/handolenn/ts3-overlay")
 
+    def auto_detect_api_key(self):
+        from ts3_client import get_auto_ts3_api_key
+        key = get_auto_ts3_api_key()
+        if key:
+            self.api_key_input.setText(key)
+            self.on_live_change()
+
     def connect_signals(self):
         """Connect UI signals AFTER widgets are populated to avoid overwrite bugs."""
         self.toggle_overlay_btn.clicked.connect(self.toggle_overlay_power)
@@ -328,6 +368,8 @@ class SettingsDialog(QDialog):
         self.x_slider.valueChanged.connect(self.on_live_change)
         self.y_slider.valueChanged.connect(self.on_live_change)
         self.drag_btn.clicked.connect(self.toggle_drag_mode)
+        self.api_key_input.textChanged.connect(self.on_live_change)
+        self.auto_key_btn.clicked.connect(self.auto_detect_api_key)
 
     def update_toggle_btn_state(self):
         enabled = self.config.get("overlay_enabled", True)
@@ -422,6 +464,7 @@ class SettingsDialog(QDialog):
         self.config.set("show_chat_messages", self.chat_msg_cb.isChecked())
         self.config.set("x_offset", self.x_slider.value())
         self.config.set("y_offset", self.y_slider.value())
+        self.config.set("api_key", self.api_key_input.text().strip())
 
         # Instantly update overlay visually on screen
         self.overlay.apply_config()
