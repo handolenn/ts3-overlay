@@ -9,19 +9,50 @@ from PyQt6.QtCore import QThread, pyqtSignal
 # API keyiniz buradaki kodlarla bulunur, programın TS3 ile senkron çalışabilmesi için bunlara erişebilmesi gerekmektedir. 
 # bu veriler hiçbir sunucuya gönderilmediği için sadece sizin localinizde barınır. 
 def get_auto_ts3_api_key() -> str:
-    """Auto-detect API Key from TS3's clientquery.ini config file if available."""
-    try:
-        ini_path = os.path.expandvars(r'%APPDATA%\TS3Client\clientquery.ini')
-        if os.path.exists(ini_path):
-            cfg = configparser.ConfigParser()
-            cfg.read(ini_path, encoding='utf-8')
-            for sec in cfg.sections():
-                if sec.lower() == 'general':
+    """Auto-detect API Key from TS3's clientquery.ini config file across standard paths."""
+    candidate_paths = [
+        os.path.expandvars(r'%APPDATA%\TS3Client\clientquery.ini'),
+        os.path.expandvars(r'%LOCALAPPDATA%\TS3Client\clientquery.ini'),
+        r'C:\Program Files\TeamSpeak 3 Client\config\clientquery.ini',
+        r'C:\Program Files (x86)\TeamSpeak 3 Client\config\clientquery.ini',
+    ]
+
+    # Search in APPDATA TS3Client subdirectories if any
+    appdata_ts3 = os.path.expandvars(r'%APPDATA%\TS3Client')
+    if os.path.isdir(appdata_ts3):
+        for root, _, files in os.walk(appdata_ts3):
+            for f in files:
+                if f.lower() == 'clientquery.ini':
+                    candidate_paths.append(os.path.join(root, f))
+
+    for path in candidate_paths:
+        if os.path.isfile(path):
+            try:
+                # 1. Try ConfigParser
+                cfg = configparser.ConfigParser(strict=False)
+                cfg.read(path, encoding='utf-8', errors='ignore')
+                for sec in cfg.sections():
                     for k in cfg[sec]:
-                        if k.lower() == 'api_key':
-                            return cfg[sec][k].strip()
-    except Exception as e:
-        print(f"[TS3Client] Auto API Key read error: {e}")
+                        if k.lower() in ['api_key', 'apikey', 'key']:
+                            val = cfg[sec][k].strip()
+                            if val:
+                                return val
+            except Exception:
+                pass
+
+            try:
+                # 2. Try raw line scan (in case INI section headers are missing or non-standard)
+                with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                    for line in f:
+                        line_str = line.strip()
+                        m = re.search(r'api_?key\s*=\s*(.+)', line_str, re.IGNORECASE)
+                        if m:
+                            key_val = m.group(1).strip()
+                            if key_val:
+                                return key_val
+            except Exception as e:
+                print(f"[TS3Client] Error reading {path}: {e}")
+
     return ""
 
 def unescape_ts3(text: str) -> str:
@@ -117,6 +148,42 @@ class TS3ClientThread(QThread):
                 pass
             self.socket = None
 
+    def _register_events(self, sch_id=1):
+        self._send_cmd(f"clientnotifyregister schandlerid={sch_id} event=any")
+        self._send_cmd(f"clientnotifyregister schandlerid={sch_id} event=talkstatuschange")
+        self._send_cmd(f"clientnotifyregister schandlerid={sch_id} event=channel")
+        self._send_cmd(f"clientnotifyregister schandlerid={sch_id} event=textchannel")
+        self._send_cmd(f"clientnotifyregister schandlerid={sch_id} event=textprivate")
+        self._send_cmd(f"clientnotifyregister schandlerid={sch_id} event=textserver")
+
+    def _find_and_select_active_schandler(self) -> bool:
+        """Find an active server connection handler and select it via use schandlerid=N."""
+        res = self._send_cmd("whoami")
+        if "error id=1798" in res or "not authenticated" in res:
+            return False
+
+        if "cid=" in res:
+            cid_match = re.search(r'cid=(\d+)', res)
+            if cid_match and cid_match.group(1) != "0":
+                return True
+
+        # Query schandlerlist for active connections
+        sch_res = self._send_cmd("schandlerlist")
+        if sch_res:
+            handlers = parse_ts3_list(sch_res)
+            for h in handlers:
+                sch_id = h.get("clschandlerid")
+                if sch_id:
+                    self._send_cmd(f"use schandlerid={sch_id}")
+                    test_who = self._send_cmd("whoami")
+                    if "cid=" in test_who:
+                        cid_m = re.search(r'cid=(\d+)', test_who)
+                        if cid_m and cid_m.group(1) != "0":
+                            self.current_schandlerid = sch_id
+                            self._register_events(sch_id)
+                            return True
+        return False
+
     def run(self):
         while self.running:
             demo_mode = self.config.get("demo_mode", False)
@@ -156,20 +223,23 @@ class TS3ClientThread(QThread):
                     if "error id=0" not in res:
                         print(f"[TS3Client] Auth error: {res}")
                         self.connected_signal.emit(False, "API Key Hatalı!")
+                        self.channel_updated_signal.emit("API Key Hatalı")
                         self.close_socket()
                         time.sleep(3.0)
                         continue
 
                 # Select schandlerid
-                self._send_cmd("use schandlerid=1")
+                use_res = self._send_cmd("use schandlerid=1")
+                if "error id=1798" in use_res or "not authenticated" in use_res:
+                    print("[TS3Client] Authentication required by TS3 ClientQuery!")
+                    self.connected_signal.emit(False, "API Key Gerekli!")
+                    self.channel_updated_signal.emit("API Key Gerekli")
+                    self.close_socket()
+                    time.sleep(3.0)
+                    continue
 
-                # Register for all notifications including text messages and client property changes
-                self._send_cmd("clientnotifyregister schandlerid=1 event=any")
-                self._send_cmd("clientnotifyregister schandlerid=1 event=talkstatuschange")
-                self._send_cmd("clientnotifyregister schandlerid=1 event=channel")
-                self._send_cmd("clientnotifyregister schandlerid=1 event=textchannel")
-                self._send_cmd("clientnotifyregister schandlerid=1 event=textprivate")
-                self._send_cmd("clientnotifyregister schandlerid=1 event=textserver")
+                self._find_and_select_active_schandler()
+                self._register_events(self.current_schandlerid)
 
                 self.connected_signal.emit(True, "Aktif")
 
@@ -257,11 +327,24 @@ class TS3ClientThread(QThread):
             if not whoami_res:
                 return
 
+            if "error id=1798" in whoami_res or "not authenticated" in whoami_res:
+                self.connected_signal.emit(False, "API Key Gerekli!")
+                self.channel_updated_signal.emit("API Key Girin")
+                self.users_updated_signal.emit([])
+                self.whisper_state_signal.emit(False)
+                return
+
             cid_match = re.search(r'cid=(\d+)', whoami_res)
             clid_match = re.search(r'clid=(\d+)', whoami_res)
 
-            if not cid_match:
-                self.channel_updated_signal.emit("Kanal Bulunamadı")
+            if not cid_match or cid_match.group(1) == "0":
+                if self._find_and_select_active_schandler():
+                    whoami_res = self._send_cmd("whoami")
+                    cid_match = re.search(r'cid=(\d+)', whoami_res)
+                    clid_match = re.search(r'clid=(\d+)', whoami_res)
+
+            if not cid_match or cid_match.group(1) == "0":
+                self.channel_updated_signal.emit("Sunucuya Bağlı Değil")
                 self.users_updated_signal.emit([])
                 self.whisper_state_signal.emit(False)
                 return
